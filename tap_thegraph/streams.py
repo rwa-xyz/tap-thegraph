@@ -163,12 +163,17 @@ class EntityStream(SubgraphStream):
 
     @property
     def query_fields(self) -> str:
-        return (
-            f"{k} {{ id }}"
-            if max_depth(v) > 1 or ".id" in v.get("description", "")
-            else k
-            for k, v in self.schema["properties"].items()
-        )
+
+        ignore = self.entity_config.get("ignore_fileds")
+        res = []
+        for k, v in self.schema["properties"].items():
+            if ignore is None or k not in ignore:
+                res.append( 
+                    f"{k} {{ id }}"
+                    if max_depth(v) > 1 or ".id" in v.get("description", "")
+                    else k
+                )
+        return res
 
     @property
     def query(self) -> str:
