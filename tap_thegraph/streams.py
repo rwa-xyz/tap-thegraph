@@ -12,8 +12,6 @@ import inflect
 
 p = inflect.engine()
 
-# TODO: incremental still doesn't work
-
 
 # https://stackoverflow.com/questions/43587505/how-to-find-how-many-level-of-dictionary-is-there-in-python
 def max_depth(d):
@@ -76,11 +74,12 @@ class EntityStream(SubgraphStream):
     def __init__(self, *args, **kwargs):
         self.entity_config = kwargs.pop("entity_config")
 
-        self._latest_order_attribute_value = self.entity_config.get("since")
-
         super().__init__(*args, **kwargs)
 
-        self.replication_key = self.entity_config.get("created_at")
+        self._latest_order_attribute_value = self.entity_config.get(
+            "starting_order_attribute_value"
+        )
+        self._order_attribute = self.entity_config.get("order_attribute")
 
     def _extract_entity_schema_from_api_schema(self, entity_name: str) -> dict:
         entity_definition = deepcopy(self.api_json_schema["definitions"][entity_name])
@@ -138,7 +137,7 @@ class EntityStream(SubgraphStream):
 
     @cached_property
     def order_attribute(self) -> str:
-        return self.replication_key if self.replication_key else "id"
+        return self._order_attribute or "id"
 
     @cached_property
     def order_attribute_type(self) -> str:
@@ -150,10 +149,7 @@ class EntityStream(SubgraphStream):
     ) -> Dict[str, Any]:
         return {
             "batchSize": self.config.get("batch_size"),
-            "lastOrderAttributeValue": max(
-                self._latest_order_attribute_value or "0",
-                self.get_starting_replication_key_value(context) or "0",
-            ),
+            "lastOrderAttributeValue": self._latest_order_attribute_value,
         }
 
     def get_next_page_token(
@@ -164,11 +160,11 @@ class EntityStream(SubgraphStream):
     @property
     def query_fields(self) -> str:
 
-        ignore = self.entity_config.get("ignore_fileds")
+        ignore = self.entity_config.get("ignore_fields")
         res = []
         for k, v in self.schema["properties"].items():
             if ignore is None or k not in ignore:
-                res.append( 
+                res.append(
                     f"{k} {{ id }}"
                     if max_depth(v) > 1 or ".id" in v.get("description", "")
                     else k
@@ -178,15 +174,13 @@ class EntityStream(SubgraphStream):
     @property
     def query(self) -> str:
         newline = "\n\t"
-        query = f"""
+        return f"""
 query($batchSize: Int!{ f', $lastOrderAttributeValue: {self.order_attribute_type}!' if self._latest_order_attribute_value else '' }) {{
     {self.query_type}(first: $batchSize, orderBy: {self.order_attribute}, orderDirection: asc{f', where: {{ {self.order_attribute}_gt: $lastOrderAttributeValue }}' if self._latest_order_attribute_value else ''}) {{
         {newline.join(self.query_fields)}
     }}
 }}
 """
-        self.logger.info(query)
-        return query
 
     def validate_response(self, response: requests.Response) -> None:
         if response.status_code == 400:
@@ -219,4 +213,4 @@ query($batchSize: Int!{ f', $lastOrderAttributeValue: {self.order_attribute_type
                 None if len(rows) == 0 else self._latest_order_attribute_value
             )
         else:
-            self._next_page_token = None
+            raise RuntimeError(f"No data returned: {response_json.get('errors')}")
